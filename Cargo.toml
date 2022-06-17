@@ -13,3 +13,5 @@ itertools = "0.10.1"
 rayon = "1.5.3"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
+regex = "1.5.5"
+zip = "0.6.2"

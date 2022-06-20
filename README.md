@@ -17,16 +17,16 @@ The code processes logs in parallel. Adjust the thread pool size if there too ma
 
 ## Output
 
-The result looks like a list of this:
+The result is a list of silently failed tests:
 
 ```
-(
-    "https://api.github.com/repos/AnonosDev/bigprivacy-engine/actions/runs/2496023109",
-    2022-06-14T14:38:30Z,
-    Ok(
-        2,
-    ),
-),
+FAILURE: https://github.com/AnonosDev/bigprivacy-engine/actions/runs/2527438344
+  date: 2022-06-20T07:54:12Z
+  file: Nightwatch (jJkKlL)/11_Run Nightwatch.txt
+    Data Transformers - Filters Popup - Cancel filtering
+    Data Transformers - Filters Popup - Clear filters
+    Data Transformers - Filter by Jurisdiction
+    Data Transformers - Filter by Use Case
+    Data Transformers - Filter by Relinking - No results
+    Data Transformers - Filters Popup - Closes when creating Data Transformer
 ```
-
-That means there are 2 undetected failures in that run. If there are no undetected failures, it says `Ok(0)`. If the processing of a log fails, it displays an error instead of the count.

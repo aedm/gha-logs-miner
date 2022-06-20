@@ -14,7 +14,6 @@ const WORKFLOW_NAME: &'static str = "CD";
 type Date = DateTime<Utc>;
 
 fn request_github(token: &str, url: &str) -> reqwest::Result<Response> {
-    println!("GET {url}");
     reqwest::blocking::Client::new()
         .get(url)
         .header("User-Agent", "gha-logs-miner")
@@ -26,12 +25,12 @@ fn request_github_json<Resp: serde::de::DeserializeOwned>(token: &str, url: &str
     request_github(token, url).unwrap().json::<Resp>().unwrap()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone, Debug)]
 struct WorkflowRun {
     id: u64,
     name: String,
     run_started_at: Date,
-    url: String,
+    html_url: String,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +41,7 @@ struct WorkflowRunsResponse {
 fn get_workflow_runs(token: &str, api_url: &str, days_back: i64) -> Vec<WorkflowRun> {
     let mut workflow_runs = vec![];
     let age_limit = Utc::now() - Duration::days(days_back);
+    println!("Getting the last {days_back} days worth of workflow runs.");
     for page in 0.. {
         let url = format!("{api_url}/actions/runs?per_page=100&page={page}&branch=develop");
         let runs = request_github_json::<WorkflowRunsResponse>(&token, &url)
@@ -57,13 +57,14 @@ fn get_workflow_runs(token: &str, api_url: &str, days_back: i64) -> Vec<Workflow
             .filter(|run| run.name == WORKFLOW_NAME)
             .collect_vec();
         workflow_runs.append(&mut runs);
-        println!("Run count collected so far: {}", workflow_runs.len());
+        println!("  ...page {}, got {} so far", page, workflow_runs.len());
     }
     workflow_runs
 }
 
-fn get_silent_failure_count_from_log_url(token: &str, url: &str, date: &Date) -> Result<u64> {
+fn get_silent_failure_count_from_log_url(token: &str, url: &str, run: &WorkflowRun) -> Result<()> {
     let pattern = Regex::new(r"^Nightwatch.*Run Nightwatch.txt$").unwrap();
+    let current_test_pattern = Regex::new(r" Running:  (.*)$").unwrap();
     let success_pattern = Regex::new(r"OK.*total assertions passed").unwrap();
     let mut silent_failure_count = 0;
 
@@ -71,7 +72,7 @@ fn get_silent_failure_count_from_log_url(token: &str, url: &str, date: &Date) ->
     let mut buffer = Vec::<u8>::new();
     std::io::copy(&mut response, &mut buffer)?;
     let cursor = Cursor::new(buffer);
-    let mut zip = ZipArchive::new(cursor).unwrap();
+    let mut zip = ZipArchive::new(cursor)?;
 
     for i in 0..zip.len() {
         let mut file = zip.by_index(i)?;
@@ -79,23 +80,38 @@ fn get_silent_failure_count_from_log_url(token: &str, url: &str, date: &Date) ->
             let length = file.size() as usize;
             let mut buf = vec![0u8; length];
             std::io::copy(&mut file, &mut buf)?;
+
             let reader = BufReader::new(buf.as_slice());
             let mut last_line = "".to_string();
-            let mut has_timeout = false;
+            let mut failed_tests = vec![];
+            let mut current_test = "[unknown]".to_string();
             for line in reader.lines().flatten() {
-                has_timeout |= line.contains("Timed out while waiting for element");
+                if let Some(cap) = current_test_pattern.captures(&line) {
+                    current_test = cap.get(1).unwrap().as_str().to_string();
+                }
+                if line.contains("Timed out while waiting for element") {
+                    failed_tests.push(current_test.clone());
+                }
                 last_line = line;
             }
-            if has_timeout && success_pattern.is_match(&last_line) {
+            if failed_tests.len() > 0 && success_pattern.is_match(&last_line) {
                 silent_failure_count += 1;
-                println!("FAILURE in log: {:?}, file: {}", date, file.name());
+                println!(
+                    "FAILURE: {}\n  date: {:?}\n  file: {}",
+                    run.html_url,
+                    run.run_started_at,
+                    file.name()
+                );
+                for line in failed_tests {
+                    println!("    {line}");
+                }
             }
         }
     }
     if silent_failure_count == 0 {
-        println!("SUCCESS in log: {date:?}");
+        println!("SUCCESS at {:?}", run.run_started_at);
     }
-    Ok(silent_failure_count)
+    Ok(())
 }
 
 fn main() {
@@ -108,20 +124,21 @@ fn main() {
     let token = std::env::var("GITHUB_TOKEN").unwrap();
     let user = std::env::var("GITHUB_USER").unwrap();
     let repo = std::env::var("GITHUB_REPO").unwrap();
+    let days_back = std::env::var("SEARCH_RANGE_IN_DAYS")
+        .unwrap()
+        .parse()
+        .unwrap();
     let api_url = format!("https://api.github.com/repos/{user}/{repo}");
 
-    let mut workflow_runs = get_workflow_runs(&token, &api_url, 365);
+    let mut workflow_runs = get_workflow_runs(&token, &api_url, days_back);
+    println!(
+        "Got {} workflow runs in range, downloading logs...",
+        workflow_runs.len()
+    );
 
     workflow_runs.sort_by_key(|run| run.run_started_at);
-
-    let result = workflow_runs
-        .par_iter_mut()
-        .map(|run| {
-            let url = format!("{}/actions/runs/{}/logs", api_url, run.id);
-            let res = get_silent_failure_count_from_log_url(&token, &url, &run.run_started_at);
-            (run.url.clone(), run.run_started_at.clone(), res)
-        })
-        .collect::<Vec<_>>();
-
-    println!("Results: {result:#?}");
+    workflow_runs.par_iter_mut().for_each(|run| {
+        let url = format!("{}/actions/runs/{}/logs", api_url, run.id);
+        get_silent_failure_count_from_log_url(&token, &url, &run).unwrap();
+    });
 }

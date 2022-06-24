@@ -66,6 +66,7 @@ fn get_silent_failure_count_from_log_url(token: &str, url: &str, run: &WorkflowR
     let pattern = Regex::new(r"^Nightwatch.*Run Nightwatch.txt$").unwrap();
     let current_test_pattern = Regex::new(r" Running:  (.*)$").unwrap();
     let success_pattern = Regex::new(r"OK.*total assertions passed").unwrap();
+    let fail_pattern = Regex::new(r"FAILED.* assertions failed").unwrap();
     let mut silent_failure_count = 0;
 
     let mut response = request_github(&token, &url)?;
@@ -82,19 +83,31 @@ fn get_silent_failure_count_from_log_url(token: &str, url: &str, run: &WorkflowR
             std::io::copy(&mut file, &mut buf)?;
 
             let reader = BufReader::new(buf.as_slice());
-            let mut last_line = "".to_string();
             let mut failed_tests = vec![];
             let mut current_test = "[unknown]".to_string();
+            let mut failed = false;
             for line in reader.lines().flatten() {
                 if let Some(cap) = current_test_pattern.captures(&line) {
+                    if failed {
+                        failed_tests.push(current_test);
+                        failed = false;
+                    }
                     current_test = cap.get(1).unwrap().as_str().to_string();
+                } else if line.contains("Timed out while waiting for element") {
+                    failed = true;
+                } else if success_pattern.is_match(&line) {
+                    if failed {
+                        failed_tests.push(current_test.clone());
+                        failed = false;
+                    }
+                } else if fail_pattern.is_match(&line) {
+                    failed = false;
                 }
-                if line.contains("Timed out while waiting for element") {
-                    failed_tests.push(current_test.clone());
-                }
-                last_line = line;
             }
-            if failed_tests.len() > 0 && success_pattern.is_match(&last_line) {
+            if failed {
+                failed_tests.push(current_test);
+            }
+            if failed_tests.len() > 0 {
                 silent_failure_count += 1;
                 println!(
                     "FAILURE: {}\n  date: {:?}\n  file: {}",

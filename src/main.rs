@@ -67,6 +67,7 @@ fn get_silent_failure_count_from_log_url(token: &str, url: &str, run: &WorkflowR
     let current_test_pattern = Regex::new(r" Running:  (.*)$").unwrap();
     let success_pattern = Regex::new(r"OK.*total assertions passed").unwrap();
     let fail_pattern = Regex::new(r"FAILED.* assertions failed").unwrap();
+    let stack_dump_pattern = Regex::new(r"    at ").unwrap();
     let mut silent_failure_count = 0;
 
     let mut response = request_github(&token, &url)?;
@@ -93,7 +94,7 @@ fn get_silent_failure_count_from_log_url(token: &str, url: &str, run: &WorkflowR
                         failed = false;
                     }
                     current_test = cap.get(1).unwrap().as_str().to_string();
-                } else if line.contains("Timed out while waiting for element") {
+                } else if stack_dump_pattern.is_match(&line) {
                     failed = true;
                 } else if success_pattern.is_match(&line) {
                     if failed {
